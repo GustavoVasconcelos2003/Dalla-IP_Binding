@@ -1,0 +1,151 @@
+#!/bin/bash
+
+# Início do Script
+echo -e "\e[96m==============================================\e[0m"
+echo -e "\e[96mINICIANDO A CRIAÇÃO DOS USUÁRIOS DE VPN\e[0m"
+echo -e "\e[96m==============================================\e[0m\n"
+
+# Solicitação do Nome da Empresa e do Usuário
+echo -e "\e[93mPor favor, insira o nome da empresa e do usuário conforme o padrão \"EMPRESA.USER\".\nExemplo: DALLA.FULANO\e[0m"
+read -p "Digite o nome: " nome
+
+# Listagem dos Túneis
+clientes=$(ls /etc/openvpn/ccd | grep $(echo $nome | cut -d'.' -f1))
+clientes_array=($clientes)
+count=${#clientes_array[@]}
+echo -e "\n\e[94mListando túneis disponíveis...\e[0m"
+echo $clientes
+#echo Voce possui $count tuneis com os criterios informados. 
+
+# Seleção do Túnel
+if [ $count -gt 1 ]; then
+    echo -e "\e[93mMais de um túnel encontrado. Por favor, escolha o túnel desejado:\e[0m"
+    select cliente in ${clientes[@]}; do
+        [ -n "$cliente" ] && break || echo -e "\e[91mOpção inválida. Tente novamente.\e[0m"
+done
+elif [ $count -eq 0 ]; then
+    echo -e "\e[0;31mTUNEL NÃO ENCONTRADO, POR FAVOR VALIDE A INFORMAÇÃO DIGITADA\e[0m" 
+    exit 1
+else
+    cliente="${clientes[0]}"
+fi
+
+echo -e "\n\e[92mTUNEL SELECIONADO: $cliente\e[0m"
+
+# Geração de Senha e Criação de Usuário
+senha=$(pwgen -s 15 1)
+adduser $nome -M -s /sbin/nologin --password $(openssl passwd -1 $senha)
+
+# Logging
+echo "INICIO" >> /var/log/logins
+date >> /var/log/logins
+echo "$PWD" >> /var/log/logins
+echo "Usuário criado: $nome" >> /var/log/logins
+echo "Cliente: $cliente" >> /var/log/logins
+echo "FIM" >> /var/log/logins
+
+# Confirmação de Criação de Usuário
+echo -e "\e[92m=====================================================\e[0m"
+echo -e "\e[92mUsuário criado com sucesso! Segue credenciais:\e[0m"
+echo -e "\e[92mUsuário: $nome\e[0m"
+echo -e "\e[92mSenha: $senha\e[0m"
+echo -e "\e[92m=====================================================\e[0m"
+
+# Verificação e Adição do Usuário ao Arquivo allowusers
+if [ -d "/etc/openvpn/ccd/$cliente" ]; then
+    echo "$nome" >> "/etc/openvpn/ccd/$cliente/allowusers"
+    echo -e "\e[92mUsuário $nome adicionado ao arquivo allowusers do cliente $cliente.\e[0m"
+else
+    echo -e "\e[91mErro: Diretório do cliente $cliente não encontrado.\e[0m"
+fi
+
+echo ' '
+
+# Detecção de IPs disponíveis e atribuição automática
+# Contribuição: Gustavo Vasconcelos
+
+if [ -d "/etc/openvpn/ccd/$cliente" ]; then
+
+    qtd_arquivos=$(ls /etc/openvpn/ccd/"$cliente"/ | wc -l)
+
+    if [ "$qtd_arquivos" -gt 1 ] && [[ "$cliente" == TUN-* ]]; then
+
+        echo -e "\n\e[93mTúnel com fixação manual de IP detectado. Calculando IP livre...\e[0m"
+ 
+        conf="/etc/openvpn/server/${cliente}.conf"
+
+        if [ ! -f "$conf" ]; then
+
+            echo -e "\e[91mErro: arquivo de configuração $conf não encontrado. Fixe o IP manualmente em /etc/openvpn/ccd/$cliente\e[0m"
+
+        else
+
+            server_line=$(grep -E "^server " "$conf")
+
+            rede=$(echo "$server_line" | awk '{print $2}')
+
+            mascara=$(echo "$server_line" | awk '{print $3}')
+
+            base=$(echo "$rede" | cut -d'.' -f1-3)
+ 
+            if [ "$mascara" != "255.255.255.0" ]; then
+
+                echo -e "\e[91mAtenção: máscara $mascara não é /24. Fixação automática não suportada para esta subnet. Fixe manualmente.\e[0m"
+
+            else
+
+                usados=$(grep -h "ifconfig-push" /etc/openvpn/ccd/"$cliente"/* 2>/dev/null | awk '{print $2}' | awk -F'.' '{print $4}' | sort -n | uniq)
+ 
+                livres=()
+
+                for i in $(seq 2 254); do
+
+                    if ! echo "$usados" | grep -qx "$i"; then
+
+                        livres+=("$i")
+
+                    fi
+
+                done
+ 
+                if [ ${#livres[@]} -eq 0 ]; then
+
+                    echo -e "\e[91mNenhum IP livre encontrado na faixa $base.2 - $base.254. Fixe manualmente.\e[0m"
+
+                else
+
+                    echo -e "\e[94mIPs livres encontrados: ${livres[*]}\e[0m"
+
+                    ip_sugerido="$base.${livres[0]}"
+
+                    echo -e "\e[93mIP sugerido: $ip_sugerido\e[0m"
+
+                    read -p "Confirma a fixação deste IP para $nome? (s/n): " confirma_ip
+
+                    if [[ "$confirma_ip" =~ ^[Ss]$ ]]; then
+
+                        echo "ifconfig-push $ip_sugerido 255.255.255.0" > "/etc/openvpn/ccd/$cliente/$nome"
+
+                        echo -e "\e[92mIP $ip_sugerido fixado com sucesso para $nome.\e[0m"
+
+                    else
+
+                        echo -e "\e[93mFixação cancelada. Lembre-se de fixar o IP manualmente antes do usuário conectar.\e[0m"
+
+                    fi
+
+                fi
+
+            fi
+
+        fi
+
+    fi
+
+fi
+
+echo ' ' 
+
+#echo -e '\e[32;1m ###############################'
+#echo -e '\e[32;1m # DEVELOPED BY RICARDO VIEIRA #'
+#echo -e '\e[32;1m ###############################\e[0m'
